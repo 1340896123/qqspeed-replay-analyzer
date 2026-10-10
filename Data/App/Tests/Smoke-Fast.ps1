@@ -28,9 +28,15 @@ $tests=@(
     'Smoke-SegmentComparison.ps1',
     'Smoke-FrontendSegmentContract.ps1',
     # Frontend transport: every api request must reach a terminal state. This is the regression for
-    # v3.7.23 bug (fixed in v3.7.24) where idle keep-alive connections blocked the accept loop and
+    # v3.7.23 bug (fixed in v3.7.25) where idle keep-alive connections blocked the accept loop and
     # backend-backed button hung with no response.
     'Smoke-HttpTransport.ps1',
+    # Replay time semantics: a recording span is not race time. This is the regression for the
+    # 彩虹风车岛 105.527 s vs 85.514 s report, and for the A/B lap-delta contamination it caused.
+    'Smoke-ReplayTimeSemantics.ps1',
+    # The time-semantics DATA CHAIN: the estimate must survive telemetry -> analysis JSON -> frontend
+    # payload. Both breaks found on 2026-10-11 were here (dropped laps, and a JS shape mismatch).
+    'Smoke-TimeSemanticsChain.ps1',
     'Smoke-FirstRunBootstrap.ps1',
     'Smoke-ReplayVisibility.ps1',
     'Smoke-TrainingAnalysis.ps1',
@@ -55,5 +61,5 @@ foreach($name in $tests){
 }
 $sw.Stop()
 Write-Host ''
-Write-Host ('[OK] Fast Gate passed. app=3.7.24 gate=fast tests='+$passed+'/'+$tests.Count+' real-replay=excluded structural=module-boundaries elapsed='+[Math]::Round($sw.Elapsed.TotalSeconds,1)+'s')
+Write-Host ('[OK] Fast Gate passed. app=3.7.25 gate=fast tests='+$passed+'/'+$tests.Count+' real-replay=excluded structural=module-boundaries elapsed='+[Math]::Round($sw.Elapsed.TotalSeconds,1)+'s')
 exit 0

@@ -1,4 +1,4 @@
-﻿# Native Driving Episodes v1  (Driving Analysis v2)
+# Native Driving Episodes v1  (Driving Analysis v2)
 #
 # DERIVED, NON-AUTHORITATIVE analysis. It answers "why was this corner slow for me" by building one
 # episode per **logical native Drift action** and attaching the native action timeline to it.
@@ -304,6 +304,19 @@ function NDE-BuildLapMetrics {
     $rawDriftIntervals=0
     foreach($ep in $mine){ $rawDriftIntervals+=[int]$ep.native_actions.raw_drift_interval_count }
     $gameFacing=[bool]$combo.available
+    # Replay time semantics for this lap. `lap_time_s` keeps its exact previous meaning (the raw
+    # frame span, `lap_end_s - lap_start_s`) so nothing downstream silently changes; the estimate is
+    # published alongside it, marked as an estimate, and stays $null when motion evidence is not
+    # reliable enough. See Output/Handoff/REPLAY_TIME_AUDIT.md.
+    $lapTimeSemantics=if($null-ne$Lap.time_semantics){$Lap.time_semantics}else{$null}
+    $lapRaceEstimate=$null;$lapRaceEstimated=$false;$lapRaceStatus='unavailable';$lapBoundaryAffected=$false;$lapExcludesEdgeIdle=$null
+    if($null-ne$lapTimeSemantics){
+        $lapRaceEstimate=$lapTimeSemantics.race_time_s_estimate
+        $lapRaceEstimated=[bool]$lapTimeSemantics.race_time_estimated
+        $lapRaceStatus=[string]$lapTimeSemantics.race_time_estimated_status
+        $lapBoundaryAffected=[bool]$lapTimeSemantics.boundary_affects_time
+        $lapExcludesEdgeIdle=$lapTimeSemantics.excludes_edge_idle_s
+    }
     # Lap-analysis contract (Training Analysis v1): identity, time, distance, speed, native
     # aggregates and the episode aggregate statistics, each with its own authority. Every field is a
     # measurement this function already produced; nothing new is inferred here.
@@ -312,6 +325,14 @@ function NDE-BuildLapMetrics {
         lap_time_s=[Math]::Round($lapTime,4)
         lap_start_s=[Math]::Round($lapT0,4)
         lap_end_s=[Math]::Round($lapT1,4)
+        # Estimated racing time for this lap: the part of the lap's raw span that lies inside the
+        # recording's movement window. NEVER an official result - it is explicitly an estimate, and
+        # $null when motion evidence is unavailable or unreliable (fail closed).
+        lap_time_estimate_s=$(if($null-eq$lapRaceEstimate){$null}else{[Math]::Round([double]$lapRaceEstimate,4)})
+        lap_time_is_estimate=$lapRaceEstimated
+        lap_time_estimate_status=$lapRaceStatus
+        lap_time_boundary_affected=$lapBoundaryAffected
+        lap_time_excludes_edge_idle_s=$(if($null-eq$lapExcludesEdgeIdle){$null}else{[Math]::Round([double]$lapExcludesEdgeIdle,4)})
         distance_m=[Math]::Round($dist,3)
         average_speed_mps=$(if($null-eq$avg){$null}else{[Math]::Round($avg,3)})
         max_speed_mps=$(if($null-eq$lapMax){$null}else{[Math]::Round([double]$lapMax,3)})
@@ -417,6 +438,11 @@ function NDE-BuildStream {
             lap_time_s=$lm.lap_time_s
             lap_start_s=$lm.lap_start_s
             lap_end_s=$lm.lap_end_s
+            lap_time_estimate_s=$lm.lap_time_estimate_s
+            lap_time_is_estimate=$lm.lap_time_is_estimate
+            lap_time_estimate_status=$lm.lap_time_estimate_status
+            lap_time_boundary_affected=$lm.lap_time_boundary_affected
+            lap_time_excludes_edge_idle_s=$lm.lap_time_excludes_edge_idle_s
             distance_m=$lm.distance_m
             average_speed_mps=$lm.average_speed_mps
             max_speed_mps=$lm.max_speed_mps

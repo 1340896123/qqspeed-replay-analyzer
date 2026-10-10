@@ -103,6 +103,15 @@ function NTA-BuildLapRecord {
             lap_start_s=$(if($null-ne$Lap.lap_start_s){[double]$Lap.lap_start_s}else{$null})
             lap_end_s=$(if($null-ne$Lap.lap_end_s){[double]$Lap.lap_end_s}else{$null})
             lap_time_s=$(if($null-ne$Lap.lap_time_s){[double]$Lap.lap_time_s}else{$null})
+            # Raw frame span (lap_time_s) vs estimated racing time. The estimate excludes idle at the
+            # RECORDING edges only; a stop inside the movement window stays in. It is never an
+            # official result, and it is $null when motion evidence is unreliable (fail closed).
+            lap_time_estimate_s=$(if($null-ne$Lap.lap_time_estimate_s){[double]$Lap.lap_time_estimate_s}else{$null})
+            lap_time_is_estimate=[bool]$Lap.lap_time_is_estimate
+            lap_time_estimate_status=$(if($null-ne$Lap.lap_time_estimate_status){[string]$Lap.lap_time_estimate_status}else{'unavailable'})
+            lap_time_boundary_affected=[bool]$Lap.lap_time_boundary_affected
+            lap_time_excludes_edge_idle_s=$(if($null-ne$Lap.lap_time_excludes_edge_idle_s){[double]$Lap.lap_time_excludes_edge_idle_s}else{$null})
+            lap_time_semantics='lap_time_s is the raw frame span; lap_time_estimate_s is an estimate from movement evidence'
         }
         distance=[ordered]@{total_distance_m=$(if($null-ne$Lap.distance_m){[double]$Lap.distance_m}else{$null})}
         speed=[ordered]@{
@@ -161,6 +170,48 @@ function NTA-BuildLapRecord {
     }
 }
 
+# ---------------------------------------------------------------------------------------------
+# Lap-time comparability (replay_time_semantics_v1).
+#
+# The raw lap span (`lap_time_s`) includes recording-edge idle, so comparing two of them compares
+# how long each side sat parked before its first frame as much as how it was driven. A durable
+# comparison must use the movement-derived estimate, and only when BOTH sides have one. When either
+# side lacks a trustworthy estimate the lap-time delta is withheld (fail closed) while every
+# spatial / drift / recovery comparison keeps working exactly as before.
+# ---------------------------------------------------------------------------------------------
+function NTA-StreamMovementWindow {
+    param([object]$EpisodesStream)
+    if($null-eq$EpisodesStream){ return $null }
+    if($null-ne$EpisodesStream.time_semantics-and$null-ne$EpisodesStream.time_semantics.movement_window){ return $EpisodesStream.time_semantics.movement_window }
+    if($null-ne$EpisodesStream.movement_window){ return $EpisodesStream.movement_window }
+    return $null
+}
+
+function NTA-LapTimeSemanticsUsable {
+    # A lap time may be COMPARED only when the movement window is available and the lap carries a
+    # positive movement-derived estimate. Anything else stays unavailable rather than being guessed.
+    param([object]$Lap,[object]$MovementWindow)
+    if($null-eq$Lap){ return $false }
+    if($null-eq$MovementWindow-or-not[bool]$MovementWindow.available){ return $false }
+    if(-not[bool]$Lap.lap_time_is_estimate){ return $false }
+    if($null-eq$Lap.lap_time_estimate_s){ return $false }
+    if([double]$Lap.lap_time_estimate_s-le0){ return $false }
+    return $true
+}
+
+function NTA-LapComparisonTime {
+    # The value a comparison should use: the estimate when usable, otherwise the raw span, with a
+    # flag so a caller never presents a raw span as a race time.
+    param([object]$Lap,[object]$MovementWindow)
+    if($null-eq$Lap){ return [pscustomobject]@{value=$null;is_estimate=$false;usable=$false} }
+    if(NTA-LapTimeSemanticsUsable -Lap $Lap -MovementWindow $MovementWindow){
+        return [pscustomobject]@{value=[double]$Lap.lap_time_estimate_s;is_estimate=$true;usable=$true}
+    }
+    $raw=$null
+    if($null-ne$Lap.lap_time_s){ $raw=[double]$Lap.lap_time_s }
+    return [pscustomobject]@{value=$raw;is_estimate=$false;usable=$false}
+}
+
 # Intra-replay comparison: every other lap against the fastest valid lap of the same stream.
 #
 # ROLES ARE EXPLICIT: the subject is the lap under examination, the baseline is the fastest valid lap
@@ -189,7 +240,13 @@ function NTA-BuildIntraReplayComparison {
     if($valid.Count-lt2){
         return [pscustomobject][ordered]@{status='unavailable_insufficient_valid_laps';reason='fewer than two laps carry a positive measured lap time';fastest_lap=$null;comparisons=@()}
     }
-    $fastest=@($valid|Sort-Object @{Expression={[double]$_.lap_time_s}},@{Expression={[int]$_.lap}})[0]
+    # Lap-time deltas require BOTH laps to carry a trustworthy movement-derived estimate. The
+    # movement window is a property of the recording, so it is the same for every lap here; the raw
+    # span is never used as a race time in a published delta.
+    $window=NTA-StreamMovementWindow $EpisodesStream
+    $fastest=@($valid|Sort-Object @{Expression={[double]$(if($null-ne$_.lap_time_estimate_s-and[bool]$_.lap_time_is_estimate){[double]$_.lap_time_estimate_s}else{[double]$_.lap_time_s})}},@{Expression={[int]$_.lap}})[0]
+    $fastestCmp=NTA-LapComparisonTime -Lap $fastest -MovementWindow $window
+    $lapDeltaUsable=($fastestCmp.usable -and $valid.Count-ge2)
     $fLap=[int]$fastest.lap
     $secB=@(__secs $fLap)
     $nRows=@($Rows).Count
@@ -199,13 +256,22 @@ function NTA-BuildIntraReplayComparison {
     foreach($lap in @($valid|Sort-Object {[int]$_.lap})){
         if([int]$lap.lap-eq$fLap){continue}
         $secA=@(__secs ([int]$lap.lap))
+        $subjectCmp=NTA-LapComparisonTime -Lap $lap -MovementWindow $window
+        $pairUsable=($lapDeltaUsable-and$subjectCmp.usable)
+        # total_delta_s keeps the raw span difference (existing meaning, so no consumer silently
+        # changes meaning); the comparable movement-derived delta is published separately and stays
+        # unavailable unless BOTH laps carry a trustworthy estimate.
         $total=[Math]::Round(([double]$lap.lap_time_s-[double]$fastest.lap_time_s),4)
+        $totalEstimate=if($pairUsable){[Math]::Round(([double]$subjectCmp.value-[double]$fastestCmp.value),4)}else{$null}
+        $totalStatus=if($pairUsable){$(if($subjectCmp.is_estimate){'estimated_from_movement_evidence'}else{'measured'})}else{'unavailable_incomparable_movement_window'}
         if($secA.Count-eq0-or$secB.Count-eq0){
             $out.Add([pscustomobject][ordered]@{
                 status='comparison_unavailable_no_sections'
                 lap=[int]$lap.lap;compared_against_lap=$fLap;total_delta_s=$total
-                subject=[ordered]@{label=('L'+[string][int]$lap.lap);lap=[int]$lap.lap;lap_time_s=[double]$lap.lap_time_s}
-                baseline=[ordered]@{label=('L'+[string]$fLap);lap=$fLap;lap_time_s=[double]$fastest.lap_time_s}
+                lap_time_delta_s=$totalEstimate
+                lap_time_delta_status=$totalStatus
+                subject=[ordered]@{label=('L'+[string][int]$lap.lap);lap=[int]$lap.lap;lap_time_s=[double]$lap.lap_time_s;lap_time_estimate_s=$lap.lap_time_estimate_s;lap_time_is_estimate=[bool]$lap.lap_time_is_estimate}
+                baseline=[ordered]@{label=('L'+[string]$fLap);lap=$fLap;lap_time_s=[double]$fastest.lap_time_s;lap_time_estimate_s=$fastest.lap_time_estimate_s;lap_time_is_estimate=[bool]$fastest.lap_time_is_estimate}
                 reason='one of the two laps has no derived spatial section, so no shared comparison window can be built'
                 breakdown=$null;observations=@()
             })
@@ -215,7 +281,7 @@ function NTA-BuildIntraReplayComparison {
         $laEnd=NTA-RowIndexAtTime $Rows 0 ($nRows-1) ([double]$lap.lap_end_s)
         $bd=NTA-TimeLossBreakdown -SubjectSections $secA -BaselineSections $secB -SubjectRows $Rows -BaselineRows $Rows `
             -SubjectEpisodes @($lap.episodes) -BaselineEpisodes @($fastest.episodes) `
-            -SubjectLapDurationS ([double]$lap.lap_time_s) -BaselineLapDurationS ([double]$fastest.lap_time_s) `
+            -SubjectLapDurationS $(if($pairUsable){[double]$subjectCmp.value}else{[double]$lap.lap_time_s}) -BaselineLapDurationS $(if($lapDeltaUsable){[double]$fastestCmp.value}else{[double]$fastest.lap_time_s}) `
             -SubjectLapStart $laStart -SubjectLapEnd $laEnd -BaselineLapStart $lbStart -BaselineLapEnd $lbEnd `
             -SubjectDriftAvailable ([bool]$lap.drift_available) -SubjectComboAvailable ([bool]$lap.native.combo_game_facing) `
             -BaselineDriftAvailable ([bool]$fastest.drift_available) -BaselineComboAvailable ([bool]$fastest.native.combo_game_facing) `
@@ -226,9 +292,13 @@ function NTA-BuildIntraReplayComparison {
             status=[string]$bd.status
             lap=[int]$lap.lap
             compared_against_lap=$fLap
-            subject=[ordered]@{label=('L'+[string][int]$lap.lap);lap=[int]$lap.lap;lap_time_s=[double]$lap.lap_time_s}
-            baseline=[ordered]@{label=('L'+[string]$fLap);lap=$fLap;lap_time_s=[double]$fastest.lap_time_s}
+            subject=[ordered]@{label=('L'+[string][int]$lap.lap);lap=[int]$lap.lap;lap_time_s=[double]$lap.lap_time_s;lap_time_estimate_s=$lap.lap_time_estimate_s;lap_time_is_estimate=[bool]$lap.lap_time_is_estimate}
+            baseline=[ordered]@{label=('L'+[string]$fLap);lap=$fLap;lap_time_s=[double]$fastest.lap_time_s;lap_time_estimate_s=$fastest.lap_time_estimate_s;lap_time_is_estimate=[bool]$fastest.lap_time_is_estimate}
             total_delta_s=$total
+            total_delta_semantics='raw span difference (subject - baseline); spans include recording-edge idle'
+            lap_time_delta_s=$totalEstimate
+            lap_time_delta_status=$totalStatus
+            lap_time_delta_semantics='movement-derived lap-time delta; unavailable unless both laps carry a trustworthy estimate'
             breakdown=$bd
             observations=@(NTA-BuildObservations -Breakdown $bd -SubjectLabel ('L'+[string][int]$lap.lap) -BaselineLabel ('最快圈 L'+[string]$fLap) -MaxObservations $Opts.MaxObservations)
         })
@@ -238,6 +308,9 @@ function NTA-BuildIntraReplayComparison {
         fastest_lap=$fLap
         fastest_lap_time_s=[double]$fastest.lap_time_s
         fastest_lap_selection_rule='lowest measured lap time among laps carrying a positive lap time; ties resolve to the lower lap index'
+        lap_time_delta_usable=$lapDeltaUsable
+        lap_time_delta_basis=$(if($lapDeltaUsable){'movement_derived_estimate_both_sides'}else{'unavailable_incomparable_movement_window'})
+        lap_time_delta_semantics='lap-time deltas require a trustworthy movement window on BOTH sides; the raw frame span is never published as a race-time delta'
         comparisons=@($out.ToArray())
     }
 }
@@ -463,7 +536,22 @@ function NTA-FastestLapOf($Training) {
     if($null-eq$Training){return $null}
     $laps=@($Training.laps|Where-Object{$null-ne$_.time.lap_time_s-and[double]$_.time.lap_time_s-gt0})
     if($laps.Count-eq0){return $null}
-    return @($laps|Sort-Object @{Expression={[double]$_.time.lap_time_s}},@{Expression={[int]$_.lap}})[0]
+    # Selection time: the movement-derived estimate when the lap carries one, otherwise the raw span.
+    # The two are kept apart so a raw span is never silently treated as a race time.
+    return @($laps|Sort-Object @{Expression={[double]$(if($null-ne$_.time.lap_time_estimate_s-and[bool]$_.time.lap_time_is_estimate){[double]$_.time.lap_time_estimate_s}else{[double]$_.time.lap_time_s})}},@{Expression={[int]$_.lap}})[0]
+}
+
+# Movement window of the stream that owns a training lap. The training block keeps its streams, so
+# the window travels with the same analysis that produced the lap.
+function NTA-TrainingLapMovementWindow($Training,$Lap) {
+    if($null-eq$Training-or$null-eq$Lap){ return $null }
+    $sid=[string]$Lap.stream_id
+    foreach($s in @($Training.streams)){
+        if([string]$s.id -ne $sid){ continue }
+        if($null-ne$s.time_semantics-and$null-ne$s.time_semantics.movement_window){ return $s.time_semantics.movement_window }
+        if($null-ne$s.movement_window){ return $s.movement_window }
+    }
+    return $null
 }
 
 # The full section contract for one lap of a training analysis.
@@ -548,8 +636,23 @@ function Compare-NativeTrainingAnalyses {
     $bestB=$(NTA-FastestLapOf $TrainingB)
     $bestATime=$(if($null-ne$bestA){[double]$bestA.time.lap_time_s}else{$null})
     $bestBTime=$(if($null-ne$bestB){[double]$bestB.time.lap_time_s}else{$null})
-    # delta = subject - baseline, so a POSITIVE total means the subject lost time to the baseline.
+    # A cross-replay lap-time delta is only meaningful when BOTH recordings expose a trustworthy
+    # movement window, because otherwise the delta partly measures how long each side sat parked
+    # before its first frame. When either side lacks one the delta is withheld; the raw spans are
+    # still published separately as spans.
+    $winA=NTA-TrainingLapMovementWindow $TrainingA $bestA
+    $winB=NTA-TrainingLapMovementWindow $TrainingB $bestB
+    $estA=$(if($null-ne$bestA.time.lap_time_estimate_s){[double]$bestA.time.lap_time_estimate_s}else{$null})
+    $estB=$(if($null-ne$bestB.time.lap_time_estimate_s){[double]$bestB.time.lap_time_estimate_s}else{$null})
+    $usableA=($null-ne$winA-and[bool]$winA.available-and$null-ne$estA-and[bool]$bestA.time.lap_time_is_estimate)
+    $usableB=($null-ne$winB-and[bool]$winB.available-and$null-ne$estB-and[bool]$bestB.time.lap_time_is_estimate)
+    $lapTimeComparable=($usableA-and$usableB)
+    # total_delta_s keeps its existing meaning (raw span difference, subject - baseline). The
+    # movement-derived comparable delta is published separately, so a consumer can never mistake an
+    # edge-idle-contaminated span difference for a race-time difference.
     $overallDelta=$(if($null-ne$bestATime-and$null-ne$bestBTime){[Math]::Round(($bestATime-$bestBTime),4)}else{$null})
+    $overallDeltaEstimate=$(if($lapTimeComparable){[Math]::Round(([double]$estA-[double]$estB),4)}else{$null})
+    $fasterBasis=$(if($lapTimeComparable){$overallDeltaEstimate}else{$overallDelta})
     $overall=[ordered]@{
         fastest_lap_a=$(if($null-ne$bestA){[int]$bestA.lap}else{$null})
         fastest_lap_b=$(if($null-ne$bestB){[int]$bestB.lap}else{$null})
@@ -557,10 +660,17 @@ function Compare-NativeTrainingAnalyses {
         fastest_lap_time_b_s=$bestBTime
         subject_lap_time_s=$bestATime
         baseline_lap_time_s=$bestBTime
+        fastest_lap_time_estimate_a_s=$(if($usableA){$estA}else{$null})
+        fastest_lap_time_estimate_b_s=$(if($usableB){$estB}else{$null})
         total_delta_s=$overallDelta
-        faster=$(if($null-eq$overallDelta){'unavailable'}elseif([Math]::Abs([double]$overallDelta)-lt0.0005){'equal'}elseif([double]$overallDelta-lt0){$LabelA}else{$LabelB})
+        total_delta_semantics='raw span difference (subject - baseline); spans include recording-edge idle'
+        lap_time_delta_s=$overallDeltaEstimate
+        lap_time_delta_is_estimate=$lapTimeComparable
+        lap_time_delta_status=$(if($lapTimeComparable){'estimated_from_movement_evidence'}else{'unavailable_incomparable_movement_window'})
+        lap_time_delta_semantics='movement-derived lap-time delta, available only when BOTH sides carry a trustworthy movement window'
+        faster=$(if($null-eq$fasterBasis){'unavailable'}elseif([Math]::Abs([double]$fasterBasis)-lt0.0005){'equal'}elseif([double]$fasterBasis-lt0){$LabelA}else{$LabelB})
         faster_note='the faster side took less time for its fastest valid lap; `total_delta_s` stays subject - baseline'
-        basis='fastest valid lap of each replay; no score and no weighted aggregate is produced'
+        basis='fastest valid lap of each replay; the lap-time delta uses the movement-derived estimate on BOTH sides and is unavailable otherwise; no score and no weighted aggregate is produced'
     }
     $subjectBlock=[ordered]@{replay_label=$LabelA;fastest_lap=$overall.fastest_lap_a;fastest_lap_time_s=$bestATime;role='subject'}
     $baselineBlock=[ordered]@{replay_label=$LabelB;fastest_lap=$overall.fastest_lap_b;fastest_lap_time_s=$bestBTime;role='baseline'}

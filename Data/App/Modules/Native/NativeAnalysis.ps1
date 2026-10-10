@@ -112,6 +112,12 @@ function NF-StreamMeta($Telemetry) {
         $rows.Add([ordered]@{
             id=[string]$s.id;role=[string]$s.role;role_label=[string]$s.role_label;sample_hz=$s.sample_hz;records=$s.records;duration_s=$s.duration_s;distance=$s.distance;avg_speed=$s.avg_speed;speed_source=[string]$s.speed_source
             lap_count=$s.lap_count;system_drift_state_available=[bool]$s.system_drift_state_available;system_drift_segment_count=$s.system_drift_segment_count;speed_effect_state_available=[bool]$s.speed_effect_state_available;native_speed_effect_segment_count=$s.native_speed_effect_segment_count;map_propulsion_effect_segment_count=$s.map_propulsion_effect_segment_count;combo_action_count=$s.combo_action_count;cw_count=$s.cw_count;wcw_count=$s.wcw_count;cww_count=$s.cww_count
+            # The lap list and the time semantics MUST travel with the stream. The frontend lap selector
+            # reads `laps` straight off the stream (telemetry), and without these the analysis JSON
+            # carried a stream view with no laps and no estimate at all - which is exactly why the UI
+            # could only ever show a raw span.
+            laps=$s.laps
+            time_semantics=$s.time_semantics
         })
     }
     return $rows.ToArray()

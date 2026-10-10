@@ -356,6 +356,25 @@ for($gi=0;$gi -lt $logical.Count;$gi++) {
     $geometryPrepMs=[long]$streamWatch.ElapsedMilliseconds
     $duration=if($cleanRows.Count -gt 1){[double]$cleanRows[$cleanRows.Count-1].time_s-[double]$cleanRows[0].time_s}else{0.0}
     $avgSpeed=if($duration -gt 0){$cum/$duration}else{0.0}
+    # Replay time semantics: the raw frame span (recording) is published separately from the motion
+    # window (an ESTIMATE). The raw span keeps its meaning; nothing is rescaled and no official race
+    # time is invented. See Telemetry.Analysis.ps1 and Output/Handoff/REPLAY_TIME_AUDIT.md.
+    $movementWindow=Get-QQReplayMovementWindow -Rows $cleanRows -Source 'production_telemetry'
+    $timeSemantics=[ordered]@{
+        contract='replay_time_semantics_v1'
+        recording_duration_s=[Math]::Round($duration,4)
+        recording_duration_semantics='raw frame span (first..last frame); includes pre-race and post-finish idle'
+        movement_window=$movementWindow
+        movement_window_duration_s=$movementWindow.duration_s
+        movement_window_status=$(if([bool]$movementWindow.available){'estimated_from_movement_evidence'}else{'unavailable'})
+        movement_window_reason=[string]$movementWindow.reason
+        # No trustworthy official timing source is implemented; the field exists so consumers never
+        # substitute an estimate for an official result.
+        official_race_duration_s=$null
+        official_race_duration_status='unavailable_no_official_timing_source'
+        official_race_duration_basis='the replay container exposes no verified official race-time field (audit: offset 0x1594 match was a name-table coincidence)'
+        raw_timeline_unchanged=$true
+    }
     # Level-1 Basic Driving quantity: max observed speed on this stream. Published as a telemetry
     # fact so the product does not have to invent it, and stays $null when the stream carries no rows.
     $maxSpeed=$null
@@ -509,6 +528,7 @@ for($gi=0;$gi -lt $logical.Count;$gi++) {
         id=$id;role=$role;role_label=$roleLabel;sample_hz=[Math]::Round([double]$g.hz,3);records=$clean.Count;speed_source=[string]$g.speed_source
         record_semantic_schema_version=$resolvedRecordSchemaVersion;vehicle_forward_axis_local=$resolvedForwardAxisLocal;contact_state_contract_version=1;contact_state_values=$contactValues;lap_index_values=$lapValues;input_bool_candidate_range='60..65';input_bool_labels_assigned=$false
         duration_s=[Math]::Round($duration,4);distance=[Math]::Round($cum,3);avg_speed=[Math]::Round($avgSpeed,3);max_speed=$(if($null-ne$maxSpeed){[Math]::Round([double]$maxSpeed,3)}else{$null})
+        time_semantics=$timeSemantics
         lap_schema_version=2;lap_count=$laps.Count;lap_status=$(if($laps.Count-gt0){'replay_native_lap_index'}else{'unavailable_no_fallback'});lap_source=$(if($laps.Count-gt0){'replay_native_int32_offset_76'}else{$null});laps=$laps
         part_count=$g.parts.Count;source_streams=@($g.parts.ToArray());csv=$csvName;preview=$preview.ToArray()
         pose_discontinuity_schema_version=1;pose_discontinuity_count=$breakOut.Count;pose_discontinuities=$breakOut.ToArray()

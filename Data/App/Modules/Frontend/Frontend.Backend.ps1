@@ -47,6 +47,12 @@ function Convert-StreamMeta($s) {
             end_t=$l.end_t
             duration_s=$l.duration_s
             distance=$l.distance
+            # Raw frame span vs estimated racing time. The estimate is published as an estimate only
+            # and stays $null when motion evidence is unreliable; see replay_time_semantics_v1.
+            lap_time_estimate_s=$(if($null-ne$l.time_semantics-and$null-ne$l.time_semantics.race_time_s_estimate){[double]$l.time_semantics.race_time_s_estimate}else{$null})
+            lap_time_is_estimate=$(if($null-ne$l.time_semantics){[bool]$l.time_semantics.race_time_estimated}else{$false})
+            lap_time_estimate_status=$(if($null-ne$l.time_semantics){[string]$l.time_semantics.race_time_estimated_status}else{'unavailable'})
+            lap_time_boundary_affected=$(if($null-ne$l.time_semantics){[bool]$l.time_semantics.boundary_affects_time}else{$false})
         }
     }
     return [ordered]@{
@@ -59,6 +65,8 @@ function Convert-StreamMeta($s) {
         distance=$s.distance
         avg_speed=$s.avg_speed
         speed_source=[string]$s.speed_source
+        # Time semantics travel with the stream so the UI can label a span as a span.
+        time_semantics=$(if($null-ne$s.time_semantics){$s.time_semantics}else{$null})
         laps=@($lapMeta)
     }
 }

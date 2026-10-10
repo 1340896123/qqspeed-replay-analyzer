@@ -1,7 +1,39 @@
-﻿const $=id=>document.getElementById(id);
+const $=id=>document.getElementById(id);
 const enc=s=>btoa(unescape(encodeURIComponent(s)));
 const dec=s=>JSON.parse(decodeURIComponent(escape(atob(s))));
 const fmt=(v,n=2)=>Number.isFinite(Number(v))?Number(v).toFixed(n):'—';
+// ---- replay time semantics (replay_time_semantics_v1) ------------------------------------------
+// duration_s / lap duration_s are RAW FRAME SPANS: they include pre-race and post-finish idle and
+// must never be presented as a race time. A movement-derived estimate is published separately and
+// is always marked as an estimate. Nothing here rescales a clock.
+const EST_MARK='≈';
+function streamTimeSemantics(s){return s?.time_semantics||null}
+// Label for a recording's total time. A span is labelled as a span.
+function recordingTimeLabel(s,digits=3){
+  const span=fmt(s?.duration_s,digits);if(span==='—')return '—';
+  return `${span}s 录像跨度`;
+}
+function movementEstimateOf(s){
+  const ts=streamTimeSemantics(s);if(!ts)return null;
+  const w=ts.movement_window;if(!w||!w.available)return null;
+  if(!Number.isFinite(Number(ts.movement_window_duration_s)))return null;
+  return Number(ts.movement_window_duration_s);
+}
+function lapEstimateOf(l){if(!l)return null;const flat=(l.lap_time_is_estimate===true)&&Number.isFinite(Number(l.lap_time_estimate_s));if(flat)return Number(l.lap_time_estimate_s);const ts=l.time_semantics;if(ts&&ts.race_time_estimated===true&&Number.isFinite(Number(ts.race_time_s_estimate)))return Number(ts.race_time_s_estimate);return null}
+// Raw span of a lap record, whichever shape it came in (telemetry `duration_s`, training `lap_time_s`).
+function lapSpanOf(l){if(!l)return null;if(Number.isFinite(Number(l.duration_s)))return Number(l.duration_s);if(Number.isFinite(Number(l.lap_time_s)))return Number(l.lap_time_s);return null}
+// Was this lap charged recording-edge idle? (telemetry keeps it inside time_semantics)
+function lapEdgeIdleOf(l){if(!l)return null;const ts=l.time_semantics;if(ts&&Number.isFinite(Number(ts.excludes_edge_idle_s)))return Number(ts.excludes_edge_idle_s);if(Number.isFinite(Number(l.lap_time_excludes_edge_idle_s)))return Number(l.lap_time_excludes_edge_idle_s);return null}
+// Lap time text: the estimate when one exists (marked), otherwise the raw span (also marked as a
+// span, not as a race time).
+function lapTimeText(l,digits=3){
+  const est=lapEstimateOf(l);
+  if(est!=null)return `${fmt(est,digits)}s${EST_MARK}`;
+  const span=fmt(lapSpanOf(l),digits);
+  return span==='—'?'—':`${span}s(跨度)`;
+}
+// A/B lap delta is only meaningful when BOTH laps carry an estimate from a movement window.
+function lapDeltaComparable(a,b){return !!a&&!!b&&lapEstimateOf(a)!=null&&lapEstimateOf(b)!=null}
 function timeDeltaView(v,approx=false){
   if(v==null||v==='')return{state:'neutral',text:'—',marker:'—',direction:'当前没有可靠的可比时间'};
   const n=Number(v);if(!Number.isFinite(n))return{state:'neutral',text:'—',marker:'—',direction:'当前没有可靠的可比时间'};
@@ -87,7 +119,7 @@ function compactReplayText(text,mapName){
 }
 function compactReplayLabel(r){return compactReplayText(labelOf(r),r?.map)}
 function compactReplaySource(r){return compactReplayText(r?.replay||r?.file||'',r?.map)}
-function recordDurationText(r){const local=(r?.streams||[]).find(s=>s.role==='local_high_frequency')||(r?.streams||[])[0]||{};return local.duration_s==null?'—':fmt(local.duration_s,2)+'s'}
+function recordDurationText(r){const local=(r?.streams||[]).find(s=>s.role==='local_high_frequency')||(r?.streams||[])[0]||{};return local.duration_s==null?'—':fmt(local.duration_s,2)+'s 跨度'}
 function localStream(t){return t?.streams?.find(s=>s.role==='local_high_frequency')||t?.streams?.[0]||null}
 function networkStreams(t){return (t?.streams||[]).filter(s=>s.role==='network_low_frequency')}
 function isInternalStreamCompare(){return compareFile===currentFile&&!!compareInternalStreamId}
@@ -164,7 +196,7 @@ function renderList(){
     d.querySelector('.itemName').textContent=shortName||'录像';d.querySelector('.itemName').title=labelOf(r);
     const gid=gameIdOf(r),mapName=r.map||'赛道未识别';
     d.querySelector('.itemMeta').textContent=mapName;
-    d.querySelector('.itemFile').textContent=`${gid?'Game '+gid+' · ':''}${local.duration_s==null?'—':fmt(local.duration_s,2)+'s'}${r.display_name&&sourceShort&&sourceShort!==shortName?' · '+sourceShort:''}`;
+    d.querySelector('.itemFile').textContent=`${gid?'Game '+gid+' · ':''}${local.duration_s==null?'—':fmt(local.duration_s,2)+'s 跨度'}${r.display_name&&sourceShort&&sourceShort!==shortName?' · '+sourceShort:''}`;
     d.querySelector('.itemFile').title=r.replay||r.file||'';
     const ab=d.querySelector('.itemAlerts');
     if(r.native_map_status!=='ready'){const s=document.createElement('span');s.className='alertBadge';s.textContent=gid?'⚠ 官方底图待确认':'⚠ 赛道身份待确认';ab.appendChild(s)}
@@ -276,7 +308,7 @@ function lapView(s,lapNo,extendEndT=null){
   if(!s||!lapNo)return null;const lap=(s.laps||[]).find(l=>String(l.lap)===String(lapNo));if(!lap)return null;
   const t0=Number(lap.start_t),lapEnd=Number(lap.end_t),tail=Number(extendEndT),t1=Number.isFinite(tail)?Math.max(lapEnd,tail):lapEnd,raw=(s.preview||[]).filter(p=>Number(p.t)>=t0-.02&&Number(p.t)<=t1+.02);
   const pts=raw.map(p=>({...p,source_t:Number(p.t),t:Number(p.t)-t0,x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)&&Number.isFinite(p.t));
-  return {lap:Number(lap.lap),duration_s:Number(lap.duration_s),points:pts,sample_hz:Number(s.sample_hz)||null,lap_end_t:lapEnd,view_end_t:t1};
+  return {lap:Number(lap.lap),duration_s:Number(lap.duration_s),lap_time_estimate_s:lap.lap_time_estimate_s,lap_time_is_estimate:lap.lap_time_is_estimate,lap_time_boundary_affected:lap.lap_time_boundary_affected,points:pts,sample_hz:Number(s.sample_hz)||null,lap_end_t:lapEnd,view_end_t:t1};
 }
 function dist(a,b){return Math.hypot(Number(b.x)-Number(a.x),Number(b.y)-Number(a.y))}
 function buildTrack(v){
@@ -760,7 +792,7 @@ async function openRecord(file){
 }
 async function buildSelectors(){
   const cur=$('currentLap'),cmpReplay=$('compareReplay'),cmpLap=$('compareLap'),laps=stream?.laps||[];
-  cur.innerHTML='';for(const l of laps){const o=document.createElement('option');o.value=String(l.lap);o.textContent=`圈 ${l.lap} · ${fmt(l.duration_s,3)}s`;cur.appendChild(o)}cur.value=currentLap;cur.disabled=laps.length<=1;
+  cur.innerHTML='';for(const l of laps){const o=document.createElement('option');o.value=String(l.lap);o.textContent=`圈 ${l.lap} · ${lapTimeText(l,3)}`;cur.appendChild(o)}cur.value=currentLap;cur.disabled=laps.length<=1;
   cur.onchange=async()=>{currentLap=cur.value;resetCustomPath();selectedSector=null;hoverSector=null;await syncCompareLapToCurrent();renderAll()};
 
   cmpReplay.innerHTML='<option value="">不对比</option>';
@@ -804,7 +836,7 @@ async function rebuildCompareLapOptions(){
   const laps=(s?.laps||[]).filter(l=>internal||!sameReplay||String(l.lap)!==String(currentLap));
   if(!laps.length){sel.disabled=true;const o=document.createElement('option');o.textContent=internal?'低频影子没有可用圈信息':'没有可比圈';o.value='';sel.appendChild(o);compareLap='';updateCompareRule();return}
   sel.disabled=false;const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='请选择对比圈';sel.appendChild(placeholder);
-  for(const l of laps){const o=document.createElement('option');o.value=String(l.lap);o.textContent=`圈 ${l.lap} · ${fmt(l.duration_s,3)}s`;sel.appendChild(o)}
+  for(const l of laps){const o=document.createElement('option');o.value=String(l.lap);o.textContent=`圈 ${l.lap} · ${lapTimeText(l,3)}`;sel.appendChild(o)}
   const sameLap=(!sameReplay)&&laps.some(l=>String(l.lap)===String(currentLap))?String(currentLap):'';
   if(!compareLap||!laps.some(l=>String(l.lap)===String(compareLap)))compareLap=sameReplay?String(laps[0].lap):sameLap;
   sel.value=compareLap;sel.onchange=async()=>{compareLap=sel.value;customPath.referenceStartIdx=null;customPath.referenceEndIdx=null;selectedSector=null;hoverSector=null;await syncCurrentLapToCompare();renderAll()};updateCompareRule();
@@ -859,9 +891,9 @@ function renderAll(){
   $('title').textContent=analysis?.map_name||analysis?.map_hint||analysis?.replay_file||'录像';$('fileHint').textContent=compactReplaySource(currentRecord())||withoutSav(fileBaseName(analysis?.replay_file||currentFile));
   const rid=resourceIdOf(analysis),gid=gameIdOf(analysis);const mapReady=analysis?.native_map?.status==='ready';
   $('mapBadge').textContent=mapReady?`Map ${rid} · ready`:gid?`Game ${gid} · 赛道已识别`:'赛道身份待确认';$('mapBadge').className='badge '+(mapReady?'good':'warn');
-  $('recordMeta').textContent=`${fmt(stream?.duration_s,3)}s · ${stream?.laps?.length||0}圈 · ${fmt(stream?.sample_hz,2)}Hz`;
+  const __mv=movementEstimateOf(stream);$('recordMeta').textContent=`${fmt(stream?.duration_s,3)}s 录像跨度${__mv!=null?` · 运动区间 ${fmt(__mv,3)}s${EST_MARK}`:''} · ${stream?.laps?.length||0}圈 · ${fmt(stream?.sample_hz,2)}Hz`;
   const subject=lapView(stream,currentLap),base=compareFile&&compareLap?lapView(referenceStream(),compareLap):null;
-  const lapDelta=subject&&base?Number(subject.duration_s)-Number(base.duration_s):null,ld=$('lapDelta'),lapViewDelta=timeDeltaView(lapDelta);ld.textContent=lapViewDelta.text;ld.className=lapDelta==null?'':lapViewDelta.state;
+  const lapEstA=subject?lapEstimateOf(subject):null,lapEstB=base?lapEstimateOf(base):null;const anyLapEst=(lapEstA!=null||lapEstB!=null);const lapDeltaComparableNow=lapDeltaComparable(subject,base);const lapDelta=lapDeltaComparableNow?(Number(lapEstA)-Number(lapEstB)):(anyLapEst?null:((subject&&base)?Number(subject.duration_s)-Number(base.duration_s):null));const ld=$('lapDelta'),lapViewDelta=timeDeltaView(lapDelta);ld.textContent=(subject&&base&&anyLapEst&&!lapDeltaComparableNow)?'圈时差不可比（缺少可信运动区间）':(lapDeltaComparableNow?(lapViewDelta.text+' (估算)'):lapViewDelta.text);ld.className=lapDelta==null?'':lapViewDelta.state;
   $('compareState').textContent=base?'A 当前圈 vs B 对比圈':(compareFile?'B 已选择 · 请选择可比圈':'未选择 B 对比对象');
   const currentName=compactReplayLabel(currentRecord())||'当前录像',referenceName=isInternalStreamCompare()?'联网低频影子':(compactReplayLabel(currentComparisonRecord())||'未选择');
   if($('currentReplayName'))$('currentReplayName').textContent=currentName;if($('compareReplayName'))$('compareReplayName').textContent=compareFile?referenceName:'未选择';
