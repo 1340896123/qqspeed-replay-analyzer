@@ -17,6 +17,8 @@
 # ReplayData export carries uin / nickname / race ids, so nothing here may ever be
 # staged. It is enumerated as local evidence only (see Tools/AnalysisClosure).
 /replay/
+# Local replay samples supplied for analysis.
+/游戏录像/
 # Replay Catalog: the local active/removed replay set. Runtime state, not source.
 /Data/ReplayCatalog/
 # Display labels / manual map names are local user state, not project source.
@@ -51,6 +53,7 @@
 /Data/Project/PROJECT_HANDOFF.md
 
 # --- Workspace-root scratch ----------------------------------------------
+/.temp/
 /Screenshot_*.jpg
 
 # --- Agent / editor / OS local state ------------------------------------
