@@ -9,14 +9,18 @@
     "telemetry": "QQReplayTelemetry.ps1",
     "native_map": "QQNativeMap.ps1",
     "map_catalog": "QQSpeedMapCatalog.ps1",
-    "refresh": "QQReplayRefresh.ps1"
+    "refresh": "QQReplayRefresh.ps1",
+    "training_dataset": "Tools/TrainingData/Export-AutodriveDataset.ps1",
+    "replay_inputs": "Tools/ReplayInputs/Export-ReplayInputs.ps1"
   },
   "production_modules": {
     "replay": "Modules/Replay",
     "map_catalog": "Modules/MapCatalog",
     "telemetry": "Modules/Telemetry",
     "native_analysis": "Modules/Native",
-    "frontend": "Modules/Frontend"
+    "frontend": "Modules/Frontend",
+    "training_data": "Modules/TrainingData",
+    "replay_inputs": "Modules/ReplayInputs"
   },
   "validation": {
     "fast": "Tests/Smoke-Fast.ps1",

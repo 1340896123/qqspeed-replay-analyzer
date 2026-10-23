@@ -19,6 +19,11 @@
 /replay/
 # Local replay samples supplied for analysis.
 /游戏录像/
+# Local autonomous-driving training recordings and generated datasets.
+/训练录像/
+/Data/TrainingData/
+__pycache__/
+*.pyc
 # Replay Catalog: the local active/removed replay set. Runtime state, not source.
 /Data/ReplayCatalog/
 # Display labels / manual map names are local user state, not project source.

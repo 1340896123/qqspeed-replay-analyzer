@@ -40,6 +40,9 @@ $tests=@(
     'Smoke-FirstRunBootstrap.ps1',
     'Smoke-ReplayVisibility.ps1',
     'Smoke-TrainingAnalysis.ps1',
+    # Optional ML tooling: temporal causality, masks and replay-level split isolation.
+    'Smoke-TrainingData.ps1',
+    'Smoke-ReplayInputs.ps1',
     'Smoke-CapabilityIndependence.ps1',
     'Smoke-ReplayLifecycle.ps1',
     'Smoke-ReplayReadContext.ps1',

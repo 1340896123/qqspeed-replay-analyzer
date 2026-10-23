@@ -12,6 +12,20 @@ The production chain is:
 
 ## Authority boundaries
 
+### Optional autonomous-driving dataset branch
+
+`Tools/TrainingData/Export-AutodriveDataset.ps1` consumes the existing physical compatibility
+export and production telemetry, then calls `Modules/TrainingData/replay_dataset.py` to build
+masked numerical datasets. This is an offline consumer; it does not redefine native facts,
+start the client or add Python as a requirement of the analyzer UI. See decision `0016`.
+
+Raw facts, derived trajectory targets, unmapped input candidates and unavailable control labels
+stay distinct. History uses causal as-of sampling and backwards finite differences; invalid pose,
+clock discontinuity and physical-stream boundaries split sequences. File hashes define whole-replay
+train/validation/test membership and normalization is fitted on train only. Output is ready for
+trajectory prediction, with auxiliary event/effect supervision gated by native availability.
+Keyboard behavior cloning and visual observations are explicitly unavailable until evidenced.
+
 ### Map identity
 
 Every resource folder `Map\Common Map\MapNN\` carries its own identity record,
@@ -354,4 +368,15 @@ These are not production authority and must not be introduced as convenience fal
 ## Runtime data policy
 
 Pre-release development rebuilds may destructively rebuild derived outputs. Raw replay archive and validated persistent transport/evidence caches are preserved according to `Modules/Replay/Replay.DevRebuild.ps1`.
+
+## Native playback input export
+
+`Tools/ReplayInputs/Export-ReplayInputs.ps1` runs the existing C# physical detector,
+then `Modules/ReplayInputs/replay_inputs.py` decodes the eight discrete input
+snapshots consumed by the client player. The standalone `replay_input_snapshots_v1`
+contract requires a native record count, verified version/stride and a single
+high-frequency vehicle stream. CSV output carries byte offsets, sampling-time
+bounds and censored interval endpoints. All local outputs stay under `.temp/`.
+See ADR 0017 for the static read-to-playback evidence. The existing trajectory
+dataset retains its own candidate-field masks until an explicit integration.
 

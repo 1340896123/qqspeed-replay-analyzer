@@ -3,7 +3,7 @@
 ## 本地分析输入
 
 - 项目目录：`E:\qqspeed-replay-analyzer`。
-- 录像目录：`E:\qqspeed-replay-analyzer\游戏录像`，存放用于本地分析的 QQ飞车 `.sav` 录像。
+- 录像目录：`E:\qqspeed-replay-analyzer\训练录像`，存放用于本地分析的 QQ飞车 `.sav` 录像。
 - 游戏安装目录：`E:\Games\WeGameApps\QQ飞车`，可只读访问客户端程序与资源文件。
 
 ## 已有逆向工具
